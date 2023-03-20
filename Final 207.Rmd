@@ -1,0 +1,370 @@
+---
+title: "Analysis of the mice neuron and reaction data"
+author: "Dongyi Qiu"
+date: '2023-03-12'
+output: html_document
+
+---
+```{r setup, include=FALSE} 
+knitr::opts_chunk$set(
+  echo = FALSE,  # don't show raw R code
+  results = 'hide',# hide result 
+  message = FALSE,  # don't show warning and message output
+  warning = FALSE, 
+  fig.show = 'asis'  # show figures "as is"
+)
+```
+```{r,warning=FALSE,message=FALSE}
+library(reshape)
+```
+# Abstract
+This project analyzed a subset of data collected by Steinmetz et al. (2019) to explore how neurons in the visual cortex of mice respond to visual stimuli and how to predict the outcome of each trial using the neural activities and stimuli. The data set contains the stimuli on the left and right as predictor variables and the session information from the experiment. The exploratory data analysis shows that all variables have an influence on the average fire rate, with the session number having the strongest impact. The primary model shows a close relationship between stimuli and the average number of spikes, with most of the coefficients of stimuli being significant and positive. The clustering of neurons shows that different neurons perform differently under similar stimuli, suggesting different functions in the neuron system. A linear model is built based on these clusters to predict the reactions of the mice, and the best model includes the random effect of the session number and random slope for the cluster and session number combinations. The model's sensitivity is 0.6153846, and the specificity is 0.8243243.
+
+# Introduction
+This project analyzed a subset of data collected by Steinmetz et al. (2019), which focused on the activity of neurons in the visual cortex of 10 mice over 39 sessions. During each session, the mice were presented with visual stimuli on two screens, and their decisions based on the stimuli were recorded. The neurons' activity in the mice's visual cortex was recorded in the form of spike trains. For my project, I specifically analyzed the spike trains of neurons in the visual cortex from the onset of the stimuli to 0.4 seconds post-onset, using five sessions from two mice.
+This project aimed to answer two questions: how neurons in the visual cortex respond to the stimuli presented on the left and right, and how to predict the outcome of each trial using the neural activities and stimuli. 
+
+# Background
+The study conducted by by Steinmetz et al. (2019) aimed to determine how neurons mediating visual processing, action selection, choice, and engagement are distributed across different brain regions. Using Neuropixels probes, approximately 30,000 neurons were recorded in 42 brain regions of mice while performing a visual discrimination task. One important finding is that neurons with action correlates are found globally in nearly every brain region, suggesting that non-specific action correlates may be ubiquitous in the mouse brain. This study provides important insights into the distribution and character of the neuronal correlates of a lateralized visual discrimination task across the mouse brain, and future work will be required to determine the circuit mechanisms that enforce these principles, how they extend to other brain areas, and the degree to which similar principles govern the neural correlates of different choice tasks.
+
+# Descriptive analysis
+```{r}
+session=list()
+for(i in 1:5){
+  session[[i]]=readRDS(paste('session',i,'.rds',sep=''))
+  print(session[[i]]$mouse_name)
+  print(session[[i]]$date_exp)
+  
+}
+```
+To answer question of how do neurons in the visual cortex respond to the stimuli. I have to calculate the average number of spikes per second across all neurons within a given 0.4 seconds time interval as the respond variable in the model. The data set also contains the stimuli on the left and right as predictor variables. And it also contains the session information from the experiment.
+```{r}
+data=data.frame()
+for (i in 1:5){
+average_fire=list()
+  for (j in 1:length(session[[i]]$spks)){
+col=data.frame(session[[i]]$spks[j])
+average_fire_pt=sum(col)/0.4/nrow(session[[i]]$spks[[1]])
+average_fire=append(average_fire,average_fire_pt)
+}
+name=rep(session[[i]]$mouse_name,times=length(session[[i]]$spks))
+session_=rep(i,times=length(session[[i]]$spks))
+data_temp=cbind(as.numeric(session[[i]]$contrast_left),as.numeric(session[[i]]$contrast_right),as.numeric(session[[i]]$feedback_type),name,as.numeric(average_fire),as.numeric(session_))
+data=rbind(data,data_temp)
+}
+colnames(data)=c("contrast_left","contrast_right","feedback_type","names","average_fire","session_num")
+```
+
+Then, I conduct the exploratory data analysis. I plot the main effect plots of the stimuli on the left and right, and the effect plot of the session number. The Y-axis is the average fire rate of neuron which is a measurement of the reaction in the neuron system. As we can see in the main effect plots, all of these variables have influence on the average fire rate. Especially, the session number has a strong impact of the average fire rate. This may due to the design of the experiment that data in different session are selected in different part of the mice brains. And different mouse can also lead to differences in the neurons' behavior. I also plot the histogram of the average fire rate. It seems to follow normal distribution. So we can started from fitting a linear regression model without transformation of the respond variable.
+```{r}
+data$average_fire=as.numeric(data$average_fire)
+library(gplots)
+par(mfrow=c(2,2))
+plotmeans(average_fire~as.factor(data$contrast_left),data=data,xlab="stimulus left",ylab="average fire", main="Main effect of stimulus on the left",cex.lab=1.5) 
+plotmeans(average_fire~as.factor(data$contrast_right),data=data,xlab="stimulus right",ylab="average fire", main="Main effect of stimulus on the right",cex.lab=1.5)
+plotmeans(average_fire~as.factor(data$session_num),data=data,xlab="session number",ylab="average fire", main="Main effect of session number",cex.lab=1.5)
+hist(data$average_fire,xlab="average fire",main="Histogram of average fire")
+```
+
+I continue to plot the interaction plots of variables. The interaction plots also show similar result as the main effect plots. The sessions is having a stronger effect than any other variables in this data set. 
+```{r}
+par(mfrow=c(1,2))
+interaction.plot( data$contrast_left, data$session_num,data$average_fire,xlab="stimulus on the left",ylab="average fire", main="Interaction",cex.lab=1.5)
+interaction.plot( data$contrast_right, data$session_num,data$average_fire,xlab="stimulus on the right",ylab="average fire", main="Interaction",cex.lab=1.5)
+```
+
+# Inferential analysis
+## Question 1
+In question 1, we want to explore how the stimuli effect the neuron system. And actually, we cannot study all sessions in the mouse brain. What we can do is just to infer the relationship apart from the session effect. Therefore, the strong effect of sessions can be considered as a random effect in the model. 
+
+We can get started from a mixed effect model where the two fixed-effect factors are left contrast and right contrast, and a random intercept is included for each session.
+
+$$Y_{ijkl}=\mu..+\alpha_i+\beta_j+(\alpha\beta)_{ij}+\gamma_l+\epsilon_{ijkl}$$
+
+Where $Y_{ijkl}$ represent the samples. In question1 of this project, the outcome variable Y will be the average number of spikes per second across all neurons.  $\gamma_l$ is the random intercept of each session following $N(0,\sigma^2_\gamma)$. $\alpha_i$ is the factor effect of the stimuli on the left and $\beta_j$ is the factor effect of the stimili on the right. $(\alpha\beta)_{ij}$ is the factor effect of the interaction term. $\epsilon_{ijkl}$ is the random error following $N(0,\sigma_{\epsilon})$.
+
+The hypothesis of the model:
+
+1. The relationship between factors and $Y_{ijkl}$ is linear.
+
+2. The variance of residual is the same for any value of i j k l.
+
+3. Observations are independent of each other.
+
+4. For any fixed value of $\alpha_i$ $\beta_j$ $\gamma_l$, Y is normally distributed.
+
+```{r}
+data$session_num=as.factor(as.numeric(data$session_num))
+data$contrast_left=as.numeric(data$contrast_left)
+data$contrast_right=as.numeric(data$contrast_right)
+data$average_fire=as.numeric(data$average_fire)
+data$feedback_type=as.factor(data$feedback_type)
+```
+
+Fit the original model
+```{r}
+library(lme4)
+library(lmerTest)
+fit=lmerTest::lmer(average_fire~as.factor(contrast_left)+as.factor(contrast_right)+as.factor(contrast_left):as.factor(contrast_right)+(1|session_num), data=data)
+summary(fit)
+ranef(fit)
+confint(fit)
+```
+The primary model shows that there is a close relationship between stimuli and the average number of spikes. Most of the coefficients of stimuli are significant and positive, which means the stimuli can directly cause neuron spikes in the mice brain. And all coefficients of the interaction terms are negative, which may imply that the additive effect of stimuli on both right and left is not strong.
+
+
+## Model selection
+
+To make our model more reliable, I conduct model selection to get better model. I include random slope effect of the stimuli and the session number to the average spike rate and second-order terms of the stimuli. And I use AIC score to select the best model.
+```{r}
+fit1=lmerTest::lmer(average_fire~as.factor(contrast_left)+as.factor(contrast_right)+(1|session_num), data=data)
+fit2=lmerTest::lmer(average_fire~as.factor(contrast_left)+as.factor(contrast_right)+as.factor(contrast_left):as.factor(contrast_right)+(1+contrast_left+contrast_right|session_num), data=data)
+fit3=lmerTest::lmer(average_fire~as.factor(contrast_right)+as.factor(contrast_left)+as.factor(contrast_left):as.factor(contrast_right)+(1+contrast_left+contrast_right|session_num)+(0+(contrast_right)^2|session_num), data=data)
+fit4=lmerTest::lmer(average_fire~as.factor(contrast_right)+as.factor(contrast_left)+as.factor(contrast_left):as.factor(contrast_right)+(1+contrast_left+contrast_right|session_num)+(0+(contrast_left)^2|session_num), data=data)
+fit5=lmerTest::lmer(average_fire~as.factor(contrast_right)+as.factor(contrast_left)+as.factor(contrast_left):as.factor(contrast_right)+(1+contrast_left+contrast_right|session_num)+(0+(contrast_right)^2|session_num)+(0+(contrast_left)^2|session_num), data=data)
+fit6=lmerTest::lmer(average_fire~as.factor(contrast_left)+as.factor(contrast_right)+(1+contrast_left+contrast_right|session_num), data=data)
+```
+
+```{r}
+AIC(fit,fit1,fit2,fit3,fit4,fit5)
+```
+
+The model with the lowest AIC score is the fit2 model. Therefore, fit2 is the best model we have. 
+
+```{r}
+summary(fit2)
+```
+Fit2 is a linear model with random intercept and random slope but without the second-order term of the stimuli. We can get similar conclusion as we get from the primary model about how the stimuli effect the neuron activity.
+
+
+Model diagnostic
+
+```{r}
+plot(fit2)
+qqnorm(resid(fit2))
+qqline(resid(fit2))
+```
+
+There is no obverse linear pattern in the residual plot of the model fit2. And the q-q plot shows that the sample is basically following normal distribution. Therefore the assumptions of the model hold.
+
+## Question 2
+The second question is to predict the mice reaction based on their neuron activities. From the article of Steinmetz, we know that not all neurons are responsible to the mice decision. Therefore, firstly we have to do a clustering of neurons to help us determine what kind of neurons have the most important impact on the mice reaction. the clustering will be based on the k-means method.
+I calculate the performance of neurons under different combination of stimuli. There are 16 different kinds of stimuli. And I calculate the average spike per-second for each neuron under each combination of stimuli. Then I conduct the clustering using k-means methods with three original center chosen from the data set rows.
+```{r}
+session2=list()
+for (i in 1:5){
+  session_list=data.frame()
+  for (j in 1:length(session[[i]]$spks)){
+    sum_fire=rowSums(session[[i]]$spks[[j]])
+    variable=paste(as.character(session[[i]]$contrast_left[j]),as.character(session[[i]]$contrast_right[j]),sep=":")
+    sum_fire=append(sum_fire,variable)
+    session_list=rbind(session_list,sum_fire)
+  }
+  session2[[i]]=session_list
+}
+```
+
+```{r}
+list=list()
+for (i in 1:5){
+temp_list=list()
+a=session2[[i]]
+colnames(a)=c(1:(ncol(session2[[i]])-1),'comb')
+  for (j in c('0:0','0.25:0',"0.5:0",'1:0','0:0.25','0.25:0.25','0.5:0.25','1:0.25','0:0.5','0.25:0.5','0.5:0.5','1:0.5','0:1','0.25:1','0.5:1','1:1')){
+    b=a[which(a$comb==j),]
+    c=b[,1:ncol(a)-1]
+    c=as.data.frame(sapply(c,as.numeric))
+    temp=colSums(c)/nrow(b)/0.4
+    temp_list=cbind(temp_list,temp)
+  }
+  colnames(temp_list)=c('0:0','0.25:0',"0.5:0",'1:0','0:0.25','0.25:0.25','0.5:0.25','1:0.25','0:0.5','0.25:0.5','0.5:0.5','1:0.5','0:1','0.25:1','0.5:1','1:1')
+  list[[i]]=temp_list
+}
+```
+
+```{r}
+library(tidyverse)
+library(ggplot2)
+library(dplyr)
+x1=data.frame(list[[1]])
+m=matrix(kmeans(x1,3)$centers,nrow=3,ncol=16)
+m=m[order(rowMeans(m)), ]
+kmean1 <- kmeans(x1,centers=m)
+cluster1=as.character(kmean1$cluster)
+x1$"cluster"=cluster1
+x2=data.frame(list[[2]])
+m=matrix(kmeans(x2,3)$centers,nrow=3,ncol=16)
+m=m[order(rowMeans(m)), ]
+kmean2 <- kmeans(x2,centers=m)
+cluster2=as.character(kmean2$cluster)
+x2$"cluster"=cluster2
+x3=data.frame(list[[3]])
+m=matrix(kmeans(x3,3)$centers,nrow=3,ncol=16)
+m=m[order(rowMeans(m)), ]
+kmean3 <- kmeans(x3,centers=m)
+cluster3=as.character(kmean3$cluster)
+x3$"cluster"=cluster3
+x4=data.frame(list[[4]])
+m=matrix(kmeans(x4,3)$centers,nrow=3,ncol=16)
+m=m[order(rowMeans(m)), ]
+kmean4 <- kmeans(x4,centers=m)
+cluster4=as.character(kmean4$cluster)
+x4$"cluster"=cluster4
+x5=data.frame(list[[5]])
+m=matrix(kmeans(x5,3)$centers,nrow=3,ncol=16)
+m=m[order(rowMeans(m)), ]
+kmean5 <- kmeans(x5,centers=m)
+cluster5=as.character(kmean5$cluster)
+x5$"cluster"=cluster5
+```
+
+```{r}
+ggplot(x1,aes(x = as.numeric(x1$X0.0), y = as.numeric(x1$X1.1), colour = x1$cluster)) +geom_point(size=2)+labs(x = "Average firing with stimuli 0:0",y = "Average firing with stimuli 1:1",title="Cluster for session 1")
+ggplot(x2,aes(x = as.numeric(x2$X0.0), y = as.numeric(x2$X1.1), colour = x2$cluster)) +geom_point(size=2)+labs(x = "Average firing with stimuli 0:0",y = "Average firing with stimuli 1:1",title="Cluster for session 2")
+ggplot(x3,aes(x = as.numeric(x3$X0.0), y = as.numeric(x3$X1.1), colour = x3$cluster)) +geom_point(size=2)+labs(x = "Average firing with stimuli 0:0",y = "Average firing with stimuli 1:1",title="Cluster for session 3")
+ggplot(x4,aes(x = as.numeric(x4$X0.0), y = as.numeric(x4$X1.1), colour = x4$cluster)) +geom_point(size=2)+labs(x = "Average firing with stimuli 0:0",y = "Average firing with stimuli 1:1",title="Cluster for session 4")
+ggplot(x5,aes(x = as.numeric(x5$X0.0), y = as.numeric(x5$X1.1), colour = x5$cluster)) +geom_point(size=2)+labs(x = "Average firing with stimuli 0:0",y = "Average firing with stimuli 1:1",title="Cluster for session 5")
+
+```
+
+The outcome shows that neurons perform very differently under similar stimuli. This may due to different functions these neurons play in the neuron system. I try to build model based on these clusters to predict the reactions of the mice. The idea is, firstly, I will calculate the average firing rate in each clusters, then fit a linear model with effects of each cluster. The testing data is from the first 100 trails in session1. And this part of testing data will be excluded from the training data. 
+```{r}
+x=list()
+x[[1]]=x1
+x[[2]]=x2
+x[[3]]=x3
+x[[4]]=x4
+x[[5]]=x5
+```
+
+```{r}
+lst=list()
+for (i in 1:5){
+  lst_=list()
+  for (j in 1:length(session[[i]]$spks)){
+    temp_=rowSums(data.frame(session[[i]]$spks[j]))/0.4
+    temp_=append(temp_,session[[i]]$feedback_type[j])
+    lst_=rbind(lst_,temp_)
+  }
+  colnames(lst_)=c(1:nrow(data.frame(session[[i]]$spks[1])),'feedback_type')
+  lst[[i]]=lst_
+}
+
+```
+```{r}
+feedback_type=list()
+for (i in 1:5){
+  feedback_type=append(feedback_type,session[[i]]$feedback_type)
+  
+}
+session_num=c(rep('1',length(session[[1]]$feedback_type)),rep('2',length(session[[2]]$feedback_type)),rep('3',length(session[[3]]$feedback_type)),rep('4',length(session[[4]]$feedback_type)),rep('5',length(session[[5]]$feedback_type)))
+```
+
+```{r}
+low=list()
+median=list()
+high=list()
+for (i in 1:5){
+  low_temp=sapply(data.frame(lst[[i]][,which(x[[i]]$cluster=='1')]),as.numeric)
+  low_=rowMeans(low_temp)
+  low=append(low,low_)
+  median_temp=sapply(data.frame(lst[[i]][,which(x[[i]]$cluster=='2')]),as.numeric)
+  median_=rowMeans(median_temp)
+  median=append(median,median_)
+  high_temp=sapply(data.frame(lst[[i]][,which(x[[i]]$cluster=='3')]),as.numeric)
+  high_=rowMeans(high_temp)
+  high=append(high,high_)
+}
+data2=data.frame(low=unlist(low),median=unlist(median),high=unlist(high),feedback_type=unlist(feedback_type),session_num=session_num)
+```
+```{r}
+data2[which(data2$feedback_type==-1),4]=0
+training_data=data2[-1:-100,]
+testing_data=data2[1:100,]
+```
+
+The first model I get is a logistic regression model fitted on data from session1 to session5. 
+The formula of the model:
+
+$$Y_{ijkl}=\mu..+\alpha_i+\beta_j+\gamma_k+\epsilon_{ijkl}$$
+$Y_{ijkl}$ is referring to the recorded reaction of the mouse.
+$\mu..$ is the intercept.
+$\alpha_i$ $\beta_j$ $gamma_l$ are the effects of the different cluster have on the reaction.
+$\epsilon_l$ is the random error following $N(0,\sigma_{\epsilon})$.
+
+
+Use fit1 to predict the mice reaction. setting the threshold to 0.67. Calculate the sensitivity and specificity of the model. The sensitivity is 0.5769231 and specificity is 0.6081081.
+```{r}
+log.fit=glm(feedback_type~low+median+high,data=training_data,family="binomial")
+summary(log.fit)
+```
+
+
+```{r}
+probabilities=predict(log.fit, testing_data, type='response')
+predicted.values<- ifelse(probabilities > 0.67, "1", "0")
+actual.values=testing_data$feedback_type
+conf_matrix<-table(predicted.values,actual.values)
+conf_matrix
+```
+```{r}
+library(caret)
+sensitivity(conf_matrix)
+specificity(conf_matrix)
+```
+
+I consider the data set contain too many information about other session. And given the session effects are strong, it may be better to only include session 1 to the model of predicting. Therefore, I exclude information from session2, session3, session4 and session5, and refit the model. Setting the threshold to 0.67, the sensitivity of the model is 0.6153846 and the specificity of it is 0.6621622.
+```{r}
+data3=data2[1:214,]
+training_data3=data3[-1:-100,]
+testing_data3=data3[1:100,]
+log.fit3=glm(feedback_type~low+median+high,data=training_data3,family="binomial")
+summary(log.fit3)
+```
+```{r}
+probabilities3=predict(log.fit3, testing_data3, type='response')
+predicted.values3<- ifelse(probabilities3 > 0.67, "1", "0")
+conf_matrix3<-table(predicted.values3,actual.values)
+sensitivity(conf_matrix3)
+specificity(conf_matrix3)
+```
+
+To improve to model, I include the random effect of session number and random slope for the cluster and session number combinations. And this model is also based on data from session1 to session5. Here is the formula of the model. Setting the threshold to 0.63, the sensitivity of lmer.fit is 0.6153846 and the specificity of it is 0.8243243.The lmer.fit model is the best model I find to predict the reaction of mice. Here is the formula of the model.
+
+$$Y_{ijklm}=\mu..+\alpha_i+\beta_j+\gamma_k+\delta_l+\epsilon_{ijklm}$$
+$Y_{ijklm}$ is referring to the recorded reaction of the mouse.
+$\mu..$ is the intercept.
+$\alpha_i$ $\beta_j$ $gamma_k$ are the effects of the different cluster have on the reaction.
+$\delta_l$ is the random intercept of session numbers and the random slope of the session numbers with clusters.
+$\epsilon_l$ is the random error following $N(0,\sigma_{\epsilon})$.
+
+
+```{r}
+lmer.fit=lmerTest::lmer(feedback_type~low+median+high+(1+low+median+high|session_num),data=training_data)
+summary(lmer.fit)
+```
+```{r}
+probabilities_lmer=predict(lmer.fit, testing_data, type='response')
+predicted.values_lmer<- ifelse(probabilities_lmer > 0.63, "1", "0")
+conf_matrix_lmer<-table(predicted.values_lmer,actual.values)
+sensitivity(conf_matrix_lmer)
+specificity(conf_matrix_lmer)
+```
+
+# Conclusion and discussion
+In conclusion, this project analyzed a subset of data collected by Steinmetz et al. (2019) to explore how neurons in the visual cortex of mice respond to visual stimuli and how to predict the outcome of each trial using the neural activities and stimuli. The exploratory data analysis showed that the stimuli presented on the left and right have a significant impact on the average firing rate of neurons, and the session number has a strong effect, possibly due to differences in the design of the experiment and differences between mice. The primary linear mixed-effect model showed a close relationship between stimuli and the average number of spikes, with most coefficients of stimuli being significant and positive, suggesting that the stimuli directly cause neuron spikes in the mice brain. All coefficients of the interaction terms were negative, indicating that the additive effect of stimuli on both right and left is not strong.
+
+To make the model more reliable, model selection was conducted, and the best model was selected based on AIC score. The best model included a random slope effect of the stimuli and the session number to the average spike rate and second-order terms of the stimuli. This model provided similar conclusions to the primary model about how the stimuli affect the neuron activity.
+
+To predict the mice reaction based on their neuron activities, clustering was performed to determine what kind of neurons had the most important impact on the mice reaction. The clustering showed that neurons perform differently under similar stimuli, possibly due to different functions these neurons play in the neuron system. The model based on these clusters was fitted to predict the reactions of the mice. The testing data were from the first 100 trials in session 1, and this part of the testing data was excluded from the training data. The fit1 linear model was used to predict the mice reaction, with a threshold set to 0.67. The sensitivity was 0.5769231 and specificity was 0.6081081. The data set contained too much information about other sessions, and given that the session effects were strong, it was better to only include session 1 in the model for predicting. Therefore, information from session 2, session 3, session 4, and session 5 was excluded, and the model was refitted. The sensitivity of the model was 0.6153846, and the specificity was 0.6621622.
+
+To improve the model further, the random effect of session number and random slope for the cluster and session number combinations were included. This model was also based on data from session 1 to session 5. Setting the threshold to 0.63, the sensitivity of the lmer.fit model was 0.6153846, and the specificity was 0.8243243. This model was the best model for predicting the reaction of mice.
+
+Overall, this project provides insights into how neurons in the visual cortex of mice respond to visual stimuli and how to predict the outcome of each trial using the neural activities and stimuli. The findings suggest that stimuli presented on the left and right have a significant impact on the average firing rate of neurons, and the session number has a strong effect. The model based on clusters of neurons provides a useful tool for predicting the reactions of the mice, with the lmer.fit model being the best model for this purpose. These findings may have implications for further research into the workings of the visual cortex and its relationship to perception and decision-making in mice and other animals.
+
+# reference
+Steinmetz,N.A.,Zatka-Haas,P.,Carandini,M.,&Harris,K.D.(2019).Distributed coding of chioce,action and engagement across the Mouse Brain.Nature,576(7786),266-273.https://doi.org/10.1038/s41586-019-1787-x
+
+# appendix
+```{r ref.label=knitr::all_labels(), echo=TRUE, eval=FALSE}
+```
